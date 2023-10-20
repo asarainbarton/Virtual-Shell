@@ -24,11 +24,15 @@ char** split(char* inputStr);
 
 char* getNextUserInput();
 
+void handle_sigint(int sig);
+
+int ch_PID;
+
 int main()
 {
+
     char* input = getNextUserInput();
     char** splitVals = NULL;
-
     while (strcmp(input, "quit") != 0)
     {
         splitVals = split(input);
@@ -69,8 +73,38 @@ int main()
             else 
                 perror("Error");
         }
-        else
-            printf("Invalid Request.\n");
+        else // Command may be attempting to run an executable of name splitVals[0]
+        {
+            pid_t pid = fork();
+
+            if (pid == 0) // Child process
+            {
+                execv(splitVals[0], splitVals);
+
+                // Only true is unable to execute executable file
+                printf("Invalid Request.\n");
+                exit(1);
+            } 
+            else if (pid > 0) // Parent process
+            {
+                ch_PID = pid;
+                signal(SIGINT, handle_sigint);
+                
+                int status;
+                waitpid(pid, &status, 0);
+
+                struct sigaction act;
+                memset(&act, 0, sizeof(struct sigaction));
+                act.sa_flags = SA_RESETHAND;
+                act.sa_handler = handle_sigint;
+                sigaction(SIGINT, &act, NULL);
+            } 
+            else // Fork failed
+                printf("Invalid Request.\n");
+            
+            
+        }
+        
 
 
 
@@ -188,4 +222,11 @@ void checkValidPtr(char* ptr)
         exit(1);
     }
 }
+
+void handle_sigint(int sig) 
+{
+    kill(ch_PID, SIGINT);
+}
+
+
 
