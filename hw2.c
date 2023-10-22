@@ -26,10 +26,38 @@ char* getNextUserInput();
 
 void handle_sigint(int sig);
 
-int ch_PID;
+void reap_the_child(int sig);
+
+int is_child_terminated(pid_t child_pid);
+
+void add_to_set(int element);
+
+int is_in_set(int element);
+
+void remove_from_set(int element);
+
+void kill_and_reap_all_running_children();
+
+
+int ch_PID = -1, num_children = 0;
+pid_t child_pids[10];
+
+// typedef struct 
+// {
+//     int job_id;
+//     pid_t pid;
+//     int state;
+// } Job;
+
+
 
 int main()
 {
+    // If SIG_INT is detected, then any foreground running processes will get terminated. Otherwise, nothing will happen.
+    signal(SIGINT, handle_sigint);
+
+    // When a child terminates, a signal will be sent to the parent to reap it
+    signal(SIGCHLD, reap_the_child);
 
     char* input = getNextUserInput();
     char** splitVals = NULL;
@@ -79,25 +107,29 @@ int main()
 
             if (pid == 0) // Child process
             {
+                setpgid(pid, 0);
                 execv(splitVals[0], splitVals);
 
-                // Only true is unable to execute executable file
+                // Only true if unable to execute executable file
                 printf("Invalid Request.\n");
                 exit(1);
             } 
             else if (pid > 0) // Parent process
             {
-                ch_PID = pid;
-                signal(SIGINT, handle_sigint);
-                
-                int status;
-                waitpid(pid, &status, 0);
+                add_to_set(pid);
 
-                struct sigaction act;
-                memset(&act, 0, sizeof(struct sigaction));
-                act.sa_flags = SA_RESETHAND;
-                act.sa_handler = handle_sigint;
-                sigaction(SIGINT, &act, NULL);
+                
+                
+                // Foreground Process
+                if (splitVals[1] == NULL || strcmp(splitVals[1], "&") != 0)
+                {
+                    ch_PID = pid;
+
+                    int status;
+                    waitpid(pid, &status, 0);
+                    remove_from_set(ch_PID);
+                }
+                ch_PID = -1;
             } 
             else // Fork failed
                 printf("Invalid Request.\n");
@@ -107,12 +139,6 @@ int main()
         
 
 
-
-
-
-
-
-        
 
         // ********************************************************
 
@@ -124,10 +150,14 @@ int main()
         input = getNextUserInput();
     }
 
+    // They shall have no mercy
+    kill_and_reap_all_running_children();
+
 }
 
 char* getNextUserInput()
 {
+    printf("%d\n", num_children);
     printf("prompt >");
     char* input = readString();
 
@@ -225,8 +255,114 @@ void checkValidPtr(char* ptr)
 
 void handle_sigint(int sig) 
 {
-    kill(ch_PID, SIGINT);
+    int status;
+
+    if (is_in_set(ch_PID))
+    {
+        kill(ch_PID, SIGINT);
+        waitpid(ch_PID, &status, 0);
+        remove_from_set(ch_PID);
+    }
+}
+
+void reap_the_child(int sig) 
+{
+    int status;
+
+    pid_t pids[10];
+    int size = 0;
+
+    // Reap all terminated child processes (Running child processes are safe)
+    for (int i = 0; i < num_children; i++)
+    {
+        if (is_child_terminated(child_pids[i]) == 1)
+        {
+            pids[size] = child_pids[i];
+            size++;
+        }
+    }
+
+    for (int i = 0; i < size; i++)
+    {
+        waitpid(pids[i], &status, 0);
+        remove_from_set(pids[i]);
+    }
+}
+
+int is_child_terminated(pid_t child_pid) 
+{
+    int status;
+    pid_t result = waitpid(child_pid, &status, WNOHANG);
+
+    if (result == 0)
+        return 0;
+    else if (result == child_pid) // Child process has terminated
+        return 1;
+    else 
+    {
+        // An error occurred
+        return -1;
+    }
+}
+
+void kill_and_reap_all_running_children()
+{
+    int status;
+
+    for (int i = 0; i < num_children; i++)
+    {
+        kill(child_pids[i], SIGINT);
+        waitpid(child_pids[i], &status, 0);
+    }
+
+    num_children = 0;
 }
 
 
 
+
+
+
+// Set functions for child pid's array
+// ******************************************************
+void add_to_set(int element) 
+{
+    // Check if the element is already in the set
+    for (int i = 0; i < num_children; i++) 
+    {
+        if (child_pids[i] == element)
+            return;
+    }
+
+    // Add the element to the set
+    child_pids[num_children] = element;
+    num_children++;
+}
+
+int is_in_set(int element) 
+{
+    for (int i = 0; i < num_children; i++) 
+    {
+        if (child_pids[i] == element)
+            return 1;
+    }
+    return 0;
+}
+
+void remove_from_set(int element) 
+{
+    for (int i = 0; i < num_children; i++) 
+    {
+        if (child_pids[i] == element) 
+        {
+            // Shift all elements to fill the gap
+            for (int j = i; j < num_children - 1; j++) 
+                child_pids[j] = child_pids[j + 1];
+
+            num_children--;
+            return;
+        }
+    }
+}
+
+// ******************************************************
