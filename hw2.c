@@ -11,7 +11,7 @@
 #include <fcntl.h>
 
 // Additional Headers
-
+#include <stdbool.h>
 
 
 void checkValidPtr(char* ptr);
@@ -28,6 +28,8 @@ void handle_sigint(int sig);
 
 void reap_the_child(int sig);
 
+void handle_ctrl_z(int sig);
+
 int is_child_terminated(pid_t child_pid);
 
 void add_to_set(int element);
@@ -38,16 +40,34 @@ void remove_from_set(int element);
 
 void kill_and_reap_all_running_children();
 
+void update_jobs(int pid, int status, char** command);
+
+char** deepCopy(char** original);
+
+char* combineStrings(char** strings);
+
+bool jobExists(int pid);
+
+
+
+// Fun Global Stuff!!
 
 int ch_PID = -1, num_children = 0;
-pid_t child_pids[10];
+pid_t child_pids[5];
 
-// typedef struct 
-// {
-//     int job_id;
-//     pid_t pid;
-//     int state;
-// } Job;
+typedef struct 
+{
+    int job_id;
+    pid_t pid;
+    int state;
+    char** command;
+} Job;
+
+Job jobs[5];
+
+int num_jobs = 0;
+
+char** G_splitVals;
 
 
 
@@ -58,6 +78,9 @@ int main()
 
     // When a child terminates, a signal will be sent to the parent to reap it
     signal(SIGCHLD, reap_the_child);
+
+    // Handles ctrl + z (stopping only the child)
+    signal(SIGTSTP, handle_ctrl_z);
 
     char* input = getNextUserInput();
     char** splitVals = NULL;
@@ -74,6 +97,8 @@ int main()
         }
 
         // ********************************************************
+
+        G_splitVals = splitVals;
 
         if (strcmp(splitVals[0], "cd") == 0)
         {
@@ -101,6 +126,93 @@ int main()
             else 
                 perror("Error");
         }
+        else if (strcmp(splitVals[0], "jobs") == 0)
+        {
+            for (int i = 0; i < num_jobs; i++)
+            {
+                char s[12];
+                if (jobs[i].state == 0)
+                    strcpy(s, "Running");
+                else if (jobs[i].state == 1)
+                    strcpy(s, "Running");
+                else 
+                    strcpy(s, "Stopped");
+
+                char* cmd = combineStrings(jobs[i].command);
+
+                printf("[%d] (%d) %s %s\n", i + 1, jobs[i].pid, s, cmd);
+            }
+        }
+        else if (strcmp(splitVals[0], "fg") == 0 || strcmp(splitVals[0], "bg") == 0 || strcmp(splitVals[0], "kill") == 0)
+        {
+            if (splitVals[1] != NULL)
+            {
+                int the_pid = -1;
+                // User enterred by job id
+                if (splitVals[1][0] == '%') 
+                {
+                    char* newS = splitVals[1] + 1;
+                    
+                    // Must be in correct range
+                    if (atoi(newS) >= 1 && atoi(newS) <= num_jobs)
+                        the_pid = jobs[atoi(newS) - 1].pid;
+                }
+                else // User enterred by pid
+                {
+                    if (is_in_set(atoi(splitVals[1])))
+                        the_pid = atoi(splitVals[1]);
+                }
+
+                // If true, then we can resume whatever process was stopped or running in the background
+                if (the_pid != -1)
+                {
+                    if (strcmp(splitVals[0], "fg") == 0)
+                    {
+                        ch_PID = the_pid;
+                        kill(the_pid, SIGCONT);
+
+                        int status;
+                        waitpid(the_pid, &status, WUNTRACED);
+
+                        if (WIFEXITED(status))
+                            remove_from_set(ch_PID);
+                        else if (is_in_set(the_pid)) // The process was in the foreground but then got stopped again
+                        {
+                            char sl[6] = "sleep";
+                            char** G = malloc(2*sizeof(char*));
+                            G[0] = sl;
+                            G[1] = NULL;
+                            update_jobs(the_pid, 2, deepCopy(G));
+                        }
+                            
+                    }
+                    // When we want a stopped process to be a background process
+                    else if (strcmp(splitVals[0], "bg") == 0)
+                    {
+                        kill(the_pid, SIGCONT);
+                        if (is_in_set(the_pid))
+                            update_jobs(the_pid, 0, deepCopy(splitVals));
+                    }
+                    else // Kill command enterred
+                    {
+                        int stat;
+                        // If stopped, we want to make it a background process first before terminating it since linux doesn't seem to
+                        // like us terminating stopped jobs.
+                        kill(the_pid, SIGCONT);  
+                        kill(the_pid, SIGINT);
+                        waitpid(the_pid, &stat, WUNTRACED);
+                        remove_from_set(the_pid);
+                    }
+                        
+                }
+                else 
+                    printf("Invalid Request.\n");
+
+                ch_PID = -1;
+            }
+            else 
+                printf("Invalid Request.\n");
+        }
         else // Command may be attempting to run an executable of name splitVals[0]
         {
             pid_t pid = fork();
@@ -118,16 +230,16 @@ int main()
             {
                 add_to_set(pid);
 
-                
-                
                 // Foreground Process
                 if (splitVals[1] == NULL || strcmp(splitVals[1], "&") != 0)
                 {
                     ch_PID = pid;
 
                     int status;
-                    waitpid(pid, &status, 0);
-                    remove_from_set(ch_PID);
+                    waitpid(pid, &status, WUNTRACED);
+
+                    if (WIFEXITED(status))
+                        remove_from_set(ch_PID);
                 }
                 ch_PID = -1;
             } 
@@ -137,9 +249,6 @@ int main()
             
         }
         
-
-
-
         // ********************************************************
 
         // Free all memory from splitVals
@@ -157,7 +266,7 @@ int main()
 
 char* getNextUserInput()
 {
-    printf("%d\n", num_children);
+    // printf("%d\n", num_children);
     printf("prompt >");
     char* input = readString();
 
@@ -166,7 +275,6 @@ char* getNextUserInput()
 
 char** split(char* inputStr)
 {
-    char delimiter = ' ';
     char** splitVals = NULL;
     char* str = malloc(sizeof(char));
     str[0] = '\0';
@@ -175,7 +283,7 @@ char** split(char* inputStr)
     
     for (int i = 0; i < strlen(inputStr); i++)
     {
-        if (inputStr[i] != delimiter)
+        if (inputStr[i] != ' ' && inputStr[i] != 9)
         {
             count++;
             str = realloc(str, (count + 1) * sizeof(char));
@@ -253,10 +361,14 @@ void checkValidPtr(char* ptr)
     }
 }
 
+
+// Signal Handlers
+// ***********************************************************
 void handle_sigint(int sig) 
 {
     int status;
 
+    // Then we know it's a foreground job
     if (is_in_set(ch_PID))
     {
         kill(ch_PID, SIGINT);
@@ -269,7 +381,7 @@ void reap_the_child(int sig)
 {
     int status;
 
-    pid_t pids[10];
+    pid_t pids[5];
     int size = 0;
 
     // Reap all terminated child processes (Running child processes are safe)
@@ -288,6 +400,25 @@ void reap_the_child(int sig)
         remove_from_set(pids[i]);
     }
 }
+
+void handle_ctrl_z(int sig)
+{
+    if (is_in_set(ch_PID))
+    {
+        kill(ch_PID, SIGTSTP);
+
+        char sl[6] = "sleep";
+        char** G = malloc(2*sizeof(char*));
+        G[0] = sl;
+        G[1] = NULL;
+
+        update_jobs(ch_PID, 2, deepCopy(G));
+    }
+        
+    
+}
+
+// ***********************************************************
 
 int is_child_terminated(pid_t child_pid) 
 {
@@ -318,6 +449,66 @@ void kill_and_reap_all_running_children()
     num_children = 0;
 }
 
+bool jobExists(int pid) 
+{
+    for (int i = 0; i < num_jobs; i++) 
+    {
+        if (jobs[i].pid == pid) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void update_jobs(int pid, int status, char** command)
+{
+    // Then job status most-likely changed
+    if (is_in_set(pid) && jobExists(pid))
+    {
+        int index;
+        for (int i = 0; i < num_jobs; i++)
+        {
+            if (jobs[i].pid == pid)
+            {
+                index = i;
+                break;
+            }
+        }
+
+        jobs[index].state = status;
+        jobs[index].command = command;
+    }
+    // Then the job needs to be added to the job list
+    else if (is_in_set(pid) && ! jobExists(pid))
+    {
+        jobs[num_jobs].pid = pid;
+        jobs[num_jobs].state = status;
+        jobs[num_jobs].command = command;
+
+        num_jobs++;
+    }
+    // Then the job needs to be removed from the job list
+    else 
+    {
+        int index;
+        for (int i = 0; i < num_jobs; i++)
+        {
+            if (jobs[i].pid == pid)
+            {
+                index = i;
+                break;
+            }
+        }
+
+        for (int i = index; i < num_jobs - 1; i++)
+        {
+            jobs[i] = jobs[i+1];
+        }
+
+        num_jobs--;
+    }
+}
+
 
 
 
@@ -337,6 +528,21 @@ void add_to_set(int element)
     // Add the element to the set
     child_pids[num_children] = element;
     num_children++;
+
+    int stat;
+    // 0 for Foreground/Running, 1 for Background/Running, 2 for Stopped
+    if (G_splitVals[1] == NULL || strcmp(G_splitVals[1], "&") != 0)
+    {
+        stat = 0;
+    }
+    else
+    {
+        stat = 1;
+    }
+    char** v = deepCopy(G_splitVals);
+    update_jobs(element, stat, v);
+
+    
 }
 
 int is_in_set(int element) 
@@ -360,9 +566,61 @@ void remove_from_set(int element)
                 child_pids[j] = child_pids[j + 1];
 
             num_children--;
+            update_jobs(element, 1, NULL);
             return;
         }
     }
 }
 
 // ******************************************************
+
+
+char** deepCopy(char** original) 
+{
+    int i = 0;
+    while (original[i] != NULL) {
+        i++;
+    }
+
+    char** copy = malloc((i + 1) * sizeof(char*));
+    if (copy == NULL) {
+        return NULL; 
+    }
+
+    for (int j = 0; j < i; j++) {
+        int len = strlen(original[j]) + 1;
+        copy[j] = malloc(len * sizeof(char));
+        if (copy[j] == NULL) {
+            
+            for (int k = 0; k < j; k++) {
+                free(copy[k]);
+            }
+            free(copy);
+            return NULL; 
+        }
+        strcpy(copy[j], original[j]);
+    }
+    copy[i] = NULL; 
+
+    return copy;
+}
+
+char* combineStrings(char** strings) 
+{
+    int i = 0;
+    while (strings[i] != NULL) {
+        i++;
+    }
+
+    char* combined = malloc((i + 1) * sizeof(char));
+    if (combined == NULL) {
+        return NULL; 
+    }
+
+    for (int j = 0; j < i; j++) {
+        strcat(combined, strings[j]);
+        strcat(combined, " ");
+    }
+
+    return combined;
+}
