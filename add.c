@@ -9,10 +9,11 @@
 #include <signal.h>
 #include <fcntl.h>
 
-int main()
+int main(int argc, char* argv[])
 {
+    int n = atoi(argv[1]);
 
-    sleep(10);
-    printf("DONE\n");   
-    
+    printf("%d \n", n + 2); // print n + 2
+
+    return 0;
 }

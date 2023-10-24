@@ -46,6 +46,8 @@ char** deepCopy(char** original);
 
 char* combineStrings(char** strings);
 
+int getSize(char** array);
+
 bool jobExists(int pid);
 
 
@@ -68,6 +70,8 @@ Job jobs[5];
 int num_jobs = 0;
 
 char** G_splitVals;
+
+mode_t mode = S_IRWXU | S_IRWXG | S_IRWXO;
 
 
 
@@ -114,20 +118,64 @@ int main()
             }
             else
                 arg = splitVals[1];
-            
+
             if (chdir(arg) != 0)
                 perror("Error");
         }
         else if (strcmp(splitVals[0], "pwd") == 0)
         {
+            int outFileID = -1, saved_out;
+            int index = 0;
+
+            if (splitVals[1+index] != NULL && strcmp(splitVals[1+index], ">") == 0 && splitVals[2+index] != NULL)
+            {
+                outFileID = open(splitVals[2+index], O_CREAT|O_WRONLY|O_TRUNC, mode);
+                saved_out = dup(1);
+
+                dup2(outFileID, STDOUT_FILENO);
+            }
+            else if (splitVals[1+index] != NULL && strcmp(splitVals[1+index], ">>") == 0 && splitVals[2+index] != NULL)
+            {
+                outFileID = open(splitVals[2+index], O_CREAT|O_APPEND|O_WRONLY, mode);
+                saved_out = dup(1);
+
+                dup2(outFileID, STDOUT_FILENO);
+            }
+            
+
             char cwd[200];
             if (getcwd(cwd, sizeof(cwd)) != NULL)
                 printf("%s\n", cwd);
             else 
                 perror("Error");
+            
+            if (outFileID != -1)
+            {
+                close(outFileID);
+                dup2(saved_out, 1);
+            }
+
         }
         else if (strcmp(splitVals[0], "jobs") == 0)
         {
+            int inFileID = -1, outFileID = -1, saved_out, saved_in;
+            int index = 0;
+
+            if (splitVals[1+index] != NULL && strcmp(splitVals[1+index], ">") == 0 && splitVals[2+index] != NULL)
+            {
+                outFileID = open(splitVals[2+index], O_CREAT|O_WRONLY|O_TRUNC, mode);
+                saved_out = dup(1);
+
+                dup2(outFileID, STDOUT_FILENO);
+            }
+            else if (splitVals[1+index] != NULL && strcmp(splitVals[1+index], ">>") == 0 && splitVals[2+index] != NULL)
+            {
+                outFileID = open(splitVals[2+index], O_CREAT|O_APPEND|O_WRONLY, mode);
+                saved_out = dup(1);
+
+                dup2(outFileID, STDOUT_FILENO);
+            }
+
             for (int i = 0; i < num_jobs; i++)
             {
                 char s[12];
@@ -142,6 +190,14 @@ int main()
 
                 printf("[%d] (%d) %s %s\n", i + 1, jobs[i].pid, s, cmd);
             }
+            
+            if (outFileID != -1)
+            {
+                close(outFileID);
+                dup2(saved_out, 1);
+            }
+
+
         }
         else if (strcmp(splitVals[0], "fg") == 0 || strcmp(splitVals[0], "bg") == 0 || strcmp(splitVals[0], "kill") == 0)
         {
@@ -184,7 +240,6 @@ int main()
                             G[1] = NULL;
                             update_jobs(the_pid, 2, deepCopy(G));
                         }
-                            
                     }
                     // When we want a stopped process to be a background process
                     else if (strcmp(splitVals[0], "bg") == 0)
@@ -215,12 +270,57 @@ int main()
         }
         else // Command may be attempting to run an executable of name splitVals[0]
         {
+            int inFileID = -1, outFileID = -1, saved_out, saved_in;
+            int index = 0;
+
+            if (splitVals[1] != NULL && strcmp(splitVals[1], "&") == 0)
+                index++;
+
+            if (splitVals[1+index] != NULL && strcmp(splitVals[1+index], "<") == 0 && splitVals[2+index] != NULL)
+            {
+                index += 2;
+                inFileID = open(splitVals[2+index], O_RDONLY, mode);
+                saved_in = dup(STDIN_FILENO);
+
+                dup2(inFileID, STDIN_FILENO);
+            }
+            
+
+            if (splitVals[1+index] != NULL && strcmp(splitVals[1+index], ">") == 0 && splitVals[2+index] != NULL)
+            {
+                outFileID = open(splitVals[2+index], O_CREAT|O_WRONLY|O_TRUNC, mode);
+                saved_out = dup(1);
+
+                dup2(outFileID, STDOUT_FILENO);
+            }
+            else if (splitVals[1+index] != NULL && strcmp(splitVals[1+index], ">>") == 0 && splitVals[2+index] != NULL)
+            {
+                outFileID = open(splitVals[2+index], O_CREAT|O_APPEND|O_WRONLY, mode);
+                saved_out = dup(1);
+
+                dup2(outFileID, STDOUT_FILENO);
+            }
+
+
             pid_t pid = fork();
 
             if (pid == 0) // Child process
             {
                 setpgid(pid, 0);
                 execv(splitVals[0], splitVals);
+
+
+                if (inFileID != -1)
+                {
+                    close(inFileID);
+                    dup2(saved_in, STDIN_FILENO);
+                }
+                
+                if (outFileID != -1)
+                {
+                    close(outFileID);
+                    dup2(saved_out, 1);
+                }
 
                 // Only true if unable to execute executable file
                 printf("Invalid Request.\n");
@@ -244,9 +344,35 @@ int main()
                 ch_PID = -1;
             } 
             else // Fork failed
+            {
+                if (inFileID != -1)
+                {
+                    close(inFileID);
+                    dup2(saved_in, STDIN_FILENO);
+                }
+                
+                if (outFileID != -1)
+                {
+                    close(outFileID);
+                    dup2(saved_out, 1);
+                }
+
                 printf("Invalid Request.\n");
+            }
+
+            if (inFileID != -1)
+            {
+                close(inFileID);
+                dup2(saved_in, STDIN_FILENO);
+            }
+                
+            if (outFileID != -1)
+            {
+                close(outFileID);
+                dup2(saved_out, 1);
+            }
             
-            
+                
         }
         
         // ********************************************************
@@ -623,4 +749,13 @@ char* combineStrings(char** strings)
     }
 
     return combined;
+}
+
+int getSize(char** array) 
+{
+    int count = 0;
+    while (array[count] != NULL)
+        count++;
+
+    return count;
 }
