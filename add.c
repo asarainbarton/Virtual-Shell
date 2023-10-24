@@ -11,9 +11,14 @@
 
 int main(int argc, char* argv[])
 {
-    int n = atoi(argv[1]);
+    int number;
+    scanf("%d", &number);
 
-    printf("%d \n", n + 2); // print n + 2
+    printf("You entered %d\n", number);
+
+    printf("%d \n", number + 2); // print number + 2
+
+    return 0;
 
     return 0;
 }

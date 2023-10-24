@@ -48,6 +48,10 @@ char* combineStrings(char** strings);
 
 int getSize(char** array);
 
+int exists_in_command(char* text);
+
+int get_size();
+
 bool jobExists(int pid);
 
 
@@ -273,29 +277,26 @@ int main()
             int inFileID = -1, outFileID = -1, saved_out, saved_in;
             int index = 0;
 
-            if (splitVals[1] != NULL && strcmp(splitVals[1], "&") == 0)
-                index++;
 
-            if (splitVals[1+index] != NULL && strcmp(splitVals[1+index], "<") == 0 && splitVals[2+index] != NULL)
+            if (exists_in_command("<") >= 0 && splitVals[exists_in_command("<")+1] != NULL)
             {
-                index += 2;
-                inFileID = open(splitVals[2+index], O_RDONLY, mode);
+                inFileID = open(splitVals[exists_in_command("<")+1], O_RDONLY, mode);
                 saved_in = dup(STDIN_FILENO);
 
                 dup2(inFileID, STDIN_FILENO);
             }
             
 
-            if (splitVals[1+index] != NULL && strcmp(splitVals[1+index], ">") == 0 && splitVals[2+index] != NULL)
+            if (exists_in_command(">") >= 0 && splitVals[exists_in_command(">")+1] != NULL)
             {
-                outFileID = open(splitVals[2+index], O_CREAT|O_WRONLY|O_TRUNC, mode);
+                outFileID = open(splitVals[exists_in_command(">")+1], O_CREAT|O_WRONLY|O_TRUNC, mode);
                 saved_out = dup(1);
 
                 dup2(outFileID, STDOUT_FILENO);
             }
-            else if (splitVals[1+index] != NULL && strcmp(splitVals[1+index], ">>") == 0 && splitVals[2+index] != NULL)
+            else if (exists_in_command(">>") >= 0 && splitVals[exists_in_command(">>")+1] != NULL)
             {
-                outFileID = open(splitVals[2+index], O_CREAT|O_APPEND|O_WRONLY, mode);
+                outFileID = open(splitVals[exists_in_command(">>")+1], O_CREAT|O_APPEND|O_WRONLY, mode);
                 saved_out = dup(1);
 
                 dup2(outFileID, STDOUT_FILENO);
@@ -306,8 +307,28 @@ int main()
 
             if (pid == 0) // Child process
             {
-                setpgid(pid, 0);
-                execv(splitVals[0], splitVals);
+                
+                // Background process (This way we can still handle potential user input from foreground processes while still being able to 
+                // not interrupt background processes if ctrl + C or Ctrl + Z is executed)
+                if (strcmp(splitVals[get_size() - 1], "&") == 0)
+                    setpgid(pid, 0);
+
+                // In the case where you want us to execute using execvp()
+                if (strcmp(splitVals[0], "ls") == 0 || strcmp(splitVals[0], "cat") == 0 
+                    || strcmp(splitVals[0], "sort") == 0 || strcmp(splitVals[0], "./hellp") == 0 || strcmp(splitVals[0], "./slp") == 0)
+                {
+                    execvp(splitVals[0], splitVals);
+                }
+                else if (strcmp(splitVals[0], "/bin/ls") == 0 || strcmp(splitVals[0], "/bin/cat") == 0 || strcmp(splitVals[0], "/bin/sort") == 0
+                    || strcmp(splitVals[0], "hello") == 0 || strcmp(splitVals[0], "slp") == 0)
+                {
+                    execv(splitVals[0], splitVals);
+                }
+                else 
+                {
+                    execve(splitVals[0], splitVals, NULL);
+                }
+                    
 
 
                 if (inFileID != -1)
@@ -331,7 +352,7 @@ int main()
                 add_to_set(pid);
 
                 // Foreground Process
-                if (splitVals[1] == NULL || strcmp(splitVals[1], "&") != 0)
+                if (strcmp(splitVals[get_size() - 1], "&") != 0)
                 {
                     ch_PID = pid;
 
@@ -568,8 +589,9 @@ void kill_and_reap_all_running_children()
 
     for (int i = 0; i < num_children; i++)
     {
+        kill(child_pids[i], SIGCONT);
         kill(child_pids[i], SIGINT);
-        waitpid(child_pids[i], &status, 0);
+        waitpid(child_pids[i], &status, WUNTRACED);
     }
 
     num_children = 0;
@@ -758,4 +780,25 @@ int getSize(char** array)
         count++;
 
     return count;
+}
+
+int exists_in_command(char* text)
+{
+    for (int i = 0; G_splitVals[i] != NULL; i++)
+    {
+        if (strcmp(G_splitVals[i], text) == 0)
+            return i;
+    }
+
+    return -1;
+}
+
+int get_size()
+{
+    int size = 0;
+
+    for (int i = 0; G_splitVals[i] != NULL; i++)
+        size++;
+
+    return size;
 }
